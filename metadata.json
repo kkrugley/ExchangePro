@@ -1,0 +1,5 @@
+{
+  "name": "Currency Spread Analyzer",
+  "description": "Calculate the efficiency and spread of multi-step currency conversions (e.g., EUR to PLN to BYN) with real-time exchange rates and AI insights.",
+  "requestFramePermissions": []
+}

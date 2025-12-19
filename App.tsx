@@ -1,10 +1,9 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { ArrowRight, RefreshCw, Info, TrendingUp, AlertCircle, PieChart, Layers, Wallet, Percent, Edit2, X, Check, HelpCircle, Calculator, RotateCcw, Settings2 } from 'lucide-react';
+import { ArrowRight, RefreshCw, Info, AlertCircle, PieChart, Layers, Wallet, Edit2, X, Check, HelpCircle, Calculator, ArrowUpDown } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import CurrencySelector from './components/CurrencySelector';
-import { fetchExchangeRates } from './services/exchangeRateService';
-import { getFinancialInsight } from './services/geminiService';
+import { fetchExchangeRates, ExchangeRateError } from './services/exchangeRateService';
 import { ExchangeRates, ConversionStep } from './types';
 
 const REFRESH_INTERVAL_SEC = 300;
@@ -17,7 +16,7 @@ const App: React.FC = () => {
   
   // Per-step margin/spread settings
   const [marginStep1, setMarginStep1] = useState<number>(1.5);
-  const [marginStep2, setMarginStep2] = useState<number>(3.5); // Usually higher for exotic pairs like PLN
+  const [marginStep2, setMarginStep2] = useState<number>(3.5);
   const [marginDirect, setMarginDirect] = useState<number>(1.5);
 
   // Manual overrides
@@ -33,10 +32,12 @@ const App: React.FC = () => {
   const [rates, setRates] = useState<ExchangeRates | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
-  const [aiInsight, setAiInsight] = useState<string | null>(null);
-  const [isAiLoading, setIsAiLoading] = useState<boolean>(false);
   const [secondsUntilRefresh, setSecondsUntilRefresh] = useState(REFRESH_INTERVAL_SEC);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+
+  // Validation States
+  const [amountError, setAmountError] = useState(false);
+  const [helperError, setHelperError] = useState(false);
 
   const loadRates = useCallback(async (isAuto = false) => {
     if (!isAuto) setLoading(true);
@@ -45,8 +46,13 @@ const App: React.FC = () => {
       setRates(data);
       setLastUpdated(new Date());
       setSecondsUntilRefresh(REFRESH_INTERVAL_SEC);
+      setError(null);
     } catch (err) {
-      setError('Ошибка загрузки курсов.');
+      if (err instanceof ExchangeRateError) {
+        setError(err.message);
+      } else {
+        setError('Произошла непредвиденная ошибка при загрузке курсов.');
+      }
     } finally {
       if (!isAuto) setLoading(false);
     }
@@ -64,18 +70,61 @@ const App: React.FC = () => {
     return () => clearInterval(timer);
   }, [loadRates]);
 
+  const handleAmountChange = (val: string) => {
+    const num = parseFloat(val);
+    if (val === '' || isNaN(num)) {
+      setAmount(0);
+      setAmountError(true);
+    } else if (num < 0) {
+      setAmount(0);
+      setAmountError(true);
+    } else {
+      setAmount(num);
+      setAmountError(false);
+    }
+  };
+
+  const handleManualRateChange = (idx: number, val: string) => {
+    const num = parseFloat(val);
+    if (val === '' || isNaN(num) || num <= 0) {
+      if (idx === 0) setManualRate1(null);
+      if (idx === 1) setManualRate2(null);
+      if (idx === 2) setManualRateDirect(null);
+    } else {
+      if (idx === 0) setManualRate1(num);
+      if (idx === 1) setManualRate2(num);
+      if (idx === 2) setManualRateDirect(num);
+    }
+  };
+
+  const swapStartAndEnd = () => {
+    const temp = currencyA;
+    setCurrencyA(currencyC);
+    setCurrencyC(temp);
+    // Reset manual rates when swapping as they are pair-specific
+    setManualRate1(null);
+    setManualRate2(null);
+    setManualRateDirect(null);
+  };
+
   const applyHelperMargin = () => {
     const s = parseFloat(helperSell);
     const b = parseFloat(helperBuy);
-    if (s && b && s > 0 && b > 0) {
+    if (s && b && s > 0 && b > 0 && b >= s) {
       const mid = (s + b) / 2;
       const margin = Math.abs(((mid - s) / mid) * 100);
-      if (showHelperFor === 0) setMarginStep1(parseFloat(margin.toFixed(2)));
-      if (showHelperFor === 1) setMarginStep2(parseFloat(margin.toFixed(2)));
-      if (showHelperFor === 2) setMarginDirect(parseFloat(margin.toFixed(2)));
+      const roundedMargin = parseFloat(margin.toFixed(2));
+      
+      if (showHelperFor === 0) setMarginStep1(roundedMargin);
+      if (showHelperFor === 1) setMarginStep2(roundedMargin);
+      if (showHelperFor === 2) setMarginDirect(roundedMargin);
+      
       setShowHelperFor(null);
       setHelperSell('');
       setHelperBuy('');
+      setHelperError(false);
+    } else {
+      setHelperError(true);
     }
   };
 
@@ -143,15 +192,31 @@ const App: React.FC = () => {
           <section className="bg-white rounded-[2.5rem] p-8 shadow-xl shadow-slate-200/50 border border-slate-100 space-y-8">
             <div className="flex justify-between items-center">
               <h2 className="text-lg font-black flex items-center gap-2"><Wallet className="w-5 h-5 text-indigo-500" /> Основные данные</h2>
-              <button onClick={() => { setManualRate1(null); setManualRate2(null); setManualRateDirect(null); }} className="text-[10px] font-bold text-slate-400 hover:text-red-500 transition-colors">Сброс котировок</button>
+              <div className="flex items-center gap-3">
+                <button 
+                  onClick={swapStartAndEnd} 
+                  className="text-[10px] font-bold text-indigo-500 hover:text-indigo-700 transition-colors flex items-center gap-1.5 bg-indigo-50 px-3 py-1.5 rounded-lg"
+                  title="Поменять местами вход и итог"
+                >
+                  <ArrowUpDown className="w-3.5 h-3.5" /> Инверсия
+                </button>
+                <button onClick={() => { setManualRate1(null); setManualRate2(null); setManualRateDirect(null); }} className="text-[10px] font-bold text-slate-400 hover:text-red-500 transition-colors">Сброс котировок</button>
+              </div>
             </div>
             
             <div className="space-y-3">
               <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest px-1">Сумма продажи ({currencyA})</label>
               <div className="relative group">
-                <input type="number" value={amount} onChange={(e) => setAmount(Number(e.target.value))} className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-6 py-5 focus:outline-none focus:border-indigo-500 transition-all text-3xl font-black group-hover:border-slate-200" />
+                <input 
+                  type="number" 
+                  value={amount === 0 ? '' : amount} 
+                  onChange={(e) => handleAmountChange(e.target.value)} 
+                  className={`w-full bg-slate-50 border-2 rounded-2xl px-6 py-5 focus:outline-none transition-all text-3xl font-black group-hover:border-slate-200 ${amountError ? 'border-red-500 bg-red-50 focus:border-red-600' : 'border-slate-100 focus:border-indigo-500'}`} 
+                  placeholder="0.00"
+                />
                 <div className="absolute right-6 top-1/2 -translate-y-1/2 font-black text-slate-300 text-lg uppercase">{currencyA}</div>
               </div>
+              {amountError && <p className="text-[10px] font-bold text-red-500 px-1 uppercase tracking-wider">Введите корректную сумму больше нуля</p>}
             </div>
 
             <div className="space-y-6 pt-6 border-t border-slate-50">
@@ -174,28 +239,25 @@ const App: React.FC = () => {
               <CurrencySelector label="Получаю (Итог)" value={currencyC} onChange={setCurrencyC} />
             </div>
           </section>
-
-          <div className="p-6 bg-slate-900 rounded-[2rem] text-white shadow-2xl relative overflow-hidden">
-             <div className="relative z-10 space-y-4">
-                <h3 className="font-black flex items-center gap-2"><Percent className="w-5 h-5 text-indigo-400" /> Интеллектуальный отчет</h3>
-                <p className="text-xs text-slate-400 leading-relaxed">Gemini проанализирует текущие кросс-курсы и маржинальность вашего банка для поиска лучшего маршрута.</p>
-                <button onClick={async () => { setIsAiLoading(true); setAiInsight(await getFinancialInsight(currencyA, currencyB, currencyC, results?.totalLossPercent || 0, results?.efficiency || 0)); setIsAiLoading(false); }} className="w-full py-4 bg-indigo-600 rounded-xl font-bold hover:bg-indigo-500 transition-all flex items-center justify-center gap-2">
-                  {isAiLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : 'Сформировать анализ'}
-                </button>
-             </div>
-             <TrendingUp className="absolute -right-8 -bottom-8 w-32 h-32 text-white/5 rotate-12" />
-          </div>
-
-          {aiInsight && <div className="p-6 bg-white border border-slate-100 rounded-2xl text-xs text-slate-600 leading-relaxed italic animate-in slide-in-from-bottom-2">"{aiInsight}"</div>}
         </div>
 
         {/* Right Side: Results & Detailed Steps */}
         <div className="lg:col-span-7 space-y-8">
-          {loading ? (
+          {error && (
+            <div className="p-6 bg-red-50 border border-red-100 rounded-[2rem] flex items-center gap-4 text-red-600 shadow-sm animate-in fade-in slide-in-from-top-1">
+              <AlertCircle className="w-6 h-6 shrink-0" />
+              <div className="flex flex-col">
+                <p className="text-xs font-black uppercase tracking-wide">Ошибка обмена</p>
+                <p className="text-sm opacity-80">{error}</p>
+              </div>
+            </div>
+          )}
+          
+          {loading && !error ? (
              <div className="bg-white rounded-[2.5rem] h-[400px] flex items-center justify-center border border-slate-100 text-slate-400 font-bold uppercase text-xs tracking-widest animate-pulse">
                Сбор котировок...
              </div>
-          ) : results ? (
+          ) : results && !error ? (
             <div className="space-y-8 animate-in fade-in duration-700">
               
               {/* Summary Card */}
@@ -251,7 +313,14 @@ const App: React.FC = () => {
                           <div className="relative">
                             {editingIndex === i ? (
                               <div className="flex items-center gap-1 animate-in slide-in-from-right-2">
-                                <input type="number" autoFocus className="w-24 bg-white border-2 border-indigo-400 rounded-xl px-3 py-1.5 text-xs font-black text-indigo-600 outline-none" value={i === 0 ? manualRate1 ?? '' : manualRate2 ?? ''} onChange={(e) => (i === 0 ? setManualRate1(Number(e.target.value)) : setManualRate2(Number(e.target.value)))} onBlur={() => setEditingIndex(null)} />
+                                <input 
+                                  type="number" 
+                                  autoFocus 
+                                  className="w-24 bg-white border-2 border-indigo-400 rounded-xl px-3 py-1.5 text-xs font-black text-indigo-600 outline-none" 
+                                  value={i === 0 ? (manualRate1 ?? '') : (manualRate2 ?? '')} 
+                                  onChange={(e) => handleManualRateChange(i, e.target.value)} 
+                                  onBlur={() => setEditingIndex(null)} 
+                                />
                                 <button onClick={() => { i === 0 ? setManualRate1(null) : setManualRate2(null); setEditingIndex(null); }} className="p-1.5 bg-slate-50 text-slate-400 rounded-lg hover:bg-red-50 hover:text-red-500 transition-colors"><X className="w-3 h-3" /></button>
                               </div>
                             ) : (
@@ -266,23 +335,23 @@ const App: React.FC = () => {
 
                     {/* Per-step Helper Modal-ish */}
                     {showHelperFor === i && (
-                      <div className="p-5 bg-indigo-50 border border-indigo-100 rounded-2xl space-y-4 animate-in zoom-in-95 duration-200">
+                      <div className={`p-5 bg-indigo-50 border rounded-2xl space-y-4 animate-in zoom-in-95 duration-200 ${helperError ? 'border-red-300' : 'border-indigo-100'}`}>
                          <div className="flex items-start gap-2 text-indigo-900/60">
                            <Info className="w-4 h-4 shrink-0 mt-0.5" />
-                           <p className="text-[10px] font-medium">Введите данные <b>именно для этой пары</b> ({step.from}/{step.to}) из таблицы банка, чтобы вычислить специфичный спред.</p>
+                           <p className="text-[10px] font-medium leading-relaxed">Введите данные <b>именно для этой пары</b> ({step.from}/{step.to}) из таблицы банка, чтобы вычислить специфичный спред. "Купить" должно быть больше или равно "Сдать".</p>
                          </div>
                          <div className="grid grid-cols-2 gap-4">
                             <div className="space-y-1">
                                <label className="text-[9px] font-black text-slate-400 uppercase">Сдать ({step.from})</label>
-                               <input type="number" value={helperSell} onChange={(e) => setHelperSell(e.target.value)} className="w-full p-2 text-xs border border-indigo-200 rounded-lg outline-none focus:border-indigo-400" placeholder="0.0000" />
+                               <input type="number" value={helperSell} onChange={(e) => setHelperSell(e.target.value)} className={`w-full p-2 text-xs border rounded-lg outline-none focus:border-indigo-400 ${helperError ? 'border-red-400 bg-red-50' : 'border-indigo-200'}`} placeholder="0.0000" />
                             </div>
                             <div className="space-y-1">
                                <label className="text-[9px] font-black text-slate-400 uppercase">Купить ({step.from})</label>
-                               <input type="number" value={helperBuy} onChange={(e) => setHelperBuy(e.target.value)} className="w-full p-2 text-xs border border-indigo-200 rounded-lg outline-none focus:border-indigo-400" placeholder="0.0000" />
+                               <input type="number" value={helperBuy} onChange={(e) => setHelperBuy(e.target.value)} className={`w-full p-2 text-xs border rounded-lg outline-none focus:border-indigo-400 ${helperError ? 'border-red-400 bg-red-50' : 'border-indigo-200'}`} placeholder="0.0000" />
                             </div>
                          </div>
                          <div className="flex justify-end gap-2">
-                            <button onClick={() => setShowHelperFor(null)} className="px-4 py-1.5 text-[10px] font-bold text-slate-400 hover:bg-white rounded-lg transition-colors">Отмена</button>
+                            <button onClick={() => { setShowHelperFor(null); setHelperError(false); }} className="px-4 py-1.5 text-[10px] font-bold text-slate-400 hover:bg-white rounded-lg transition-colors">Отмена</button>
                             <button onClick={applyHelperMargin} className="px-4 py-1.5 text-[10px] font-bold bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors shadow-sm">Применить маржу</button>
                          </div>
                       </div>
@@ -321,7 +390,15 @@ const App: React.FC = () => {
 
                    {editingIndex === 2 && (
                      <div className="animate-in slide-in-from-top-2 duration-200">
-                        <input type="number" autoFocus placeholder="Введите курс прямой продажи..." className="w-full bg-slate-50 border-2 border-indigo-100 rounded-2xl px-5 py-4 text-sm font-black text-indigo-600 outline-none" value={manualRateDirect ?? ''} onChange={(e) => setManualRateDirect(Number(e.target.value))} onBlur={() => setEditingIndex(null)} />
+                        <input 
+                          type="number" 
+                          autoFocus 
+                          placeholder="Введите курс прямой продажи..." 
+                          className="w-full bg-slate-50 border-2 border-indigo-100 rounded-2xl px-5 py-4 text-sm font-black text-indigo-600 outline-none" 
+                          value={manualRateDirect ?? ''} 
+                          onChange={(e) => handleManualRateChange(2, e.target.value)} 
+                          onBlur={() => setEditingIndex(null)} 
+                        />
                      </div>
                    )}
 
@@ -340,19 +417,6 @@ const App: React.FC = () => {
                       </div>
                    </div>
                 </div>
-              </div>
-
-              {/* Educational Hint */}
-              <div className="p-6 bg-white rounded-3xl border border-slate-100 flex gap-4 items-start shadow-sm">
-                 <div className="w-10 h-10 bg-indigo-50 rounded-xl flex items-center justify-center shrink-0">
-                    <Settings2 className="w-5 h-5 text-indigo-500" />
-                 </div>
-                 <div className="space-y-2">
-                    <p className="text-[11px] font-bold text-slate-800 uppercase">Почему курсы разные?</p>
-                    <p className="text-xs text-slate-500 leading-relaxed italic">
-                      Для популярных пар (USD/BYN) маржа банка минимальна (около 0.2-0.5%). Для редких пар (PLN, TRY) или кросс-курсов (EUR/USD) банк закладывает гораздо больший риск, и спред может достигать 5-7%. <b>Используйте индивидуальные настройки маржи для каждого шага.</b>
-                    </p>
-                 </div>
               </div>
             </div>
           ) : null}
